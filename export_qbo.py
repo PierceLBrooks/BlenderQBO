@@ -2,9 +2,37 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
+import logging
+import time
+from datetime import datetime
+import bmesh
 import bpy
 import functools
 import os
+
+
+def get_children(obj, subject = None):
+    if (obj == None):
+        if not (subject == None):
+            return []
+        return None
+    children = []
+    print(obj.type)
+    if (obj.type == subject):
+        children.append(obj)
+    for o in bpy.data.objects:
+        if (o.parent == obj):
+            if (subject == None):
+                children.append(o)
+            else:
+                grandchildren = get_children(o, subject)
+                if (o.type == subject):
+                    children.append(o)
+                for child in grandchildren:
+                    print(child.type)
+                    if (child.type == subject):
+                        children.append(child)
+    return children
 
 
 def get_comparison(left, right):
@@ -29,14 +57,19 @@ def get_weighting(vertices, group):
                 break
 
 
-def write_skin(obj, file, bone_weight_limit):
+def write_skin(logger, obj, file, bone_weight_limit, indices):
     mesh = obj.data
     groups = obj.vertex_groups
     vertices = mesh.vertices
     names = []
+    past = []
     skin = {}
     for i, group in enumerate(groups):
         name = group.name
+        try:
+            logger.debug('Writing the OBJ group: ' + name)
+        except:
+            pass
         names.append(name)
         weighting = list(get_weighting(vertices, group))
         for j in range(len(weighting)):
@@ -44,7 +77,7 @@ def write_skin(obj, file, bone_weight_limit):
                 skin[weighting[j][0]] = {}
             skin[weighting[j][0]][i] = weighting[j][1]
     vertices = get_sorting(list(enumerate(vertices)))
-    for vertex, _ in vertices:
+    for vertex, position in vertices:
         if not (vertex in skin):
             continue
         weights = skin[vertex]
@@ -65,10 +98,98 @@ def write_skin(obj, file, bone_weight_limit):
         weights = {}
         for i in range(len(temp)):
             weights[temp[i][1]] = temp[i][0]
-        file.write("vw " + str(vertex + 1))
+        position = position.co
+        position = "%.6f %.6f %.6f" % (position[0], position[1], position[2])
+        index = ""
+        if (position in indices):
+            index += str(indices[position])
+        else:
+            index += str(vertex + 1)
+        if (index in past):
+            continue
+        past.append(index)
+        if (int(index) < 1):
+            continue
+        file.write("vw " + index)
         for key in weights:
             file.write(" %s %.6f" % (names[key], weights[key]))
         file.write("\n")
+
+
+def write_obj(logger, name, context, mesh, libraries, materials):
+    mesh.verts.ensure_lookup_table()
+    mesh.faces.ensure_lookup_table()
+    lines = []
+    faces = []
+    uvs = {}
+    normals = {}
+    vertices = {}
+    uv_indices = 1
+    normal_indices = 1
+    vertex_indices = 1
+    uv_layer = mesh.loops.layers.uv.verify()
+    try:
+        logger.debug('Writing the OBJ UV layer: ' + uv_layer.name)
+    except:
+        pass
+    for face in mesh.faces:
+        indices = {}
+        f = []
+        for vertex in face.verts:
+            temp = []
+            position = vertex.co
+            position = "%.6f %.6f %.6f" % (position[0], position[1], position[2])
+            if not (position in vertices):
+                vertices[position] = vertex_indices
+                vertex_indices += 1
+                lines.append("v "+position)
+            temp.append(vertices[position])
+            temp.append(0)
+            position = vertex.normal
+            position = "%.6f %.6f %.6f" % (position[0], position[1], position[2])
+            if not (position in normals):
+                normals[position] = normal_indices
+                normal_indices += 1
+                lines.append("vn "+position)
+            temp.append(normals[position])
+            f.append(temp)
+        for loop in face.loops:
+            position = loop[uv_layer].uv
+            position = "%.6f %.6f" % (position[0], position[1])
+            if not (position in uvs):
+                uvs[position] = uv_indices
+                uv_indices += 1
+                lines.append("vt "+position)
+            index = uvs[position]
+            position = loop.vert.co
+            position = "%.6f %.6f %.6f" % (position[0], position[1], position[2])
+            if not (position in vertices):
+                vertices[position] = vertex_indices
+                vertex_indices += 1
+                lines.append("v "+position)
+            indices[vertices[position]] = index
+        for i in range(len(f)):
+            if (f[i][0] in indices):
+                f[i][1] += indices[f[i][0]]
+        faces.append(f)
+    for library in libraries:
+        lines.append("mtllib "+library)
+    lines.append("o "+name)
+    for material in materials:
+        lines.append("usemtl "+material)
+    for face in faces:
+        line = "f "
+        for i in range(len(face)):
+            f = face[i]
+            for j in range(len(f)):
+                if (f[j] > 0):
+                    line += str(f[j])
+                if not (j == len(f) - 1):
+                    line += "/"
+            if not (i == len(face) - 1):
+                line += " "
+        lines.append(line)
+    return (lines, vertices)
 
 
 def write_qbo(
@@ -82,6 +203,17 @@ def write_qbo(
 ):
 
     from mathutils import Matrix, Quaternion
+
+    logger = logging.getLogger(__name__)
+    t1 = time.time()
+    now = datetime.now()
+
+    log_path = bpy.path.abspath(filepath + ".log")
+    log_handler = logging.FileHandler(log_path)
+    #logger.addHandler(log_handler)
+    logger.setLevel(logging.DEBUG)
+    logger.debug(now.strftime("%d-%m-%Y@%H:%M:%S"))
+    logger.debug("\texporting qbo %r..." % filepath)
 
     file = open(filepath, "w", encoding="utf8", newline="\n")
 
@@ -109,7 +241,7 @@ def write_qbo(
 
     node_locations = {}
 
-    arm.transform(obj.matrix_world)
+    #arm.transform(obj.matrix_world)
     #obj.matrix_world = Matrix()
 
     file.write("HIERARCHY %s\n" % obj.name)
@@ -322,15 +454,46 @@ def write_qbo(
     wav = open(filepath + ".obj", "r", encoding="utf8", newline="\n")
     lines = wav.readlines()
     wav.close()
+    library = "mtllib "
+    material = "usemtl "
+    libraries = []
+    materials = []
     for line in lines:
-        file.write(line.strip() + "\n")
-        for wav in bpy.data.objects:
-            if wav.parent == obj and wav.type == "MESH" and line.strip() == "o " + wav.name:
-                write_skin(wav, file, bone_weight_limit)
+        line = line.strip()
+        if (line.startswith(library)):
+            line = line[len(library):].strip()
+            if not (line in libraries):
+                libraries.append(line)
+            continue
+        elif (line.startswith(material)):
+            line = line[len(material):].strip()
+            if not (line in materials):
+                materials.append(line)
+            continue
     try:
         os.remove(filepath + ".obj")
     except:
         pass
+    meshes = get_children(obj, "MESH")
+    names = []
+    for wav in meshes:
+        if wav.name in names:
+            continue
+        try:
+            logger.debug('Writing the OBJ mesh object: ' + wav.name)
+        except:
+            pass
+        names.append(wav.name)
+        mesh = bmesh.new()
+        mesh.from_mesh(wav.data)
+        lines, indices = write_obj(logger, wav.name, context, mesh, libraries, materials)
+        mesh.free()
+        for line in lines:
+            line = line.strip()
+            file.write(line + "\n")
+            for wav in bpy.data.objects:
+                if wav.parent == obj and wav.type == "MESH" and line == "o " + wav.name:
+                    write_skin(logger, wav, file, bone_weight_limit, indices)
 
     file.close()
 

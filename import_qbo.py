@@ -657,7 +657,7 @@ def load(
     #logger.addHandler(log_handler)
     logger.setLevel(logging.DEBUG)
     logger.debug(now.strftime("%d-%m-%Y@%H:%M:%S"))
-    logger.debug("\tparsing qbo %r..." % filepath)
+    logger.debug("\timporting qbo %r..." % filepath)
     qbo_nodes, qbo_frame_time, qbo_frame_count, qbo_vertices, qbo_weights = read_qbo(
         logger, context, filepath,
     )
